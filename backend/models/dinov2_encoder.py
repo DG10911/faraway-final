@@ -5,8 +5,12 @@ from typing import List, Optional
 
 
 class DINOv2Encoder(nn.Module):
-    def __init__(self, model_name: str = "vit_small", device: Optional[str] = None):
+    MODEL_NAMES = {"vits14", "vitb14", "vitl14", "vitg14"}
+
+    def __init__(self, model_name: str = "vits14", device: Optional[str] = None):
         super().__init__()
+        if model_name not in self.MODEL_NAMES:
+            raise ValueError(f"model_name must be one of {self.MODEL_NAMES}, got '{model_name}'")
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = torch.hub.load("facebookresearch/dinov2", f"dinov2_{model_name}")
         self.model.eval()
