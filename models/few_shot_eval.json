@@ -1,0 +1,20 @@
+{
+  "closed_set": {
+    "mean_accuracy": 0.5062989898989898,
+    "std_accuracy": 0.12420985284438502,
+    "ci_95": 0.024345131157499464,
+    "n_episodes": 100,
+    "n_ways": 5,
+    "n_shots": 5
+  },
+  "open_set": {
+    "mean_accuracy": 0.5004405964405964,
+    "std_accuracy": 0.11797488897439079,
+    "ci_95": 0.023123078238980594,
+    "n_episodes": 100,
+    "n_ways": 5,
+    "n_shots": 5,
+    "open_set_detection_rate": 0.07666666666666666,
+    "false_unknown_rate": 0.022547955747955747
+  }
+}

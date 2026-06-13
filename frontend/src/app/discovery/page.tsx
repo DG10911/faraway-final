@@ -1,59 +1,149 @@
-"use client";
+"use client"
 
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react"
+import { Search, AlertTriangle, Tag, RefreshCw, FileQuestion, Loader2 } from "lucide-react"
+import { PageContainer } from "@/components/layout/PageContainer"
+import { Card } from "@/components/ui/Card"
+import { Badge } from "@/components/ui/Badge"
+import { LoadingSkeleton } from "@/components/ui/LoadingSkeleton"
+import { api } from "@/lib/api"
+import type { UnknownSample } from "@/lib/types"
 
 export default function DiscoveryPage() {
-  const [samples] = useState([
-    { id: 1, label: "Unknown #001", confidence: 0.93, timestamp: "2026-06-10 14:32", track: "A12" },
-    { id: 2, label: "Unknown #002", confidence: 0.87, timestamp: "2026-06-10 13:15", track: "B7" },
-    { id: 3, label: "Unknown #003", confidence: 0.71, timestamp: "2026-06-10 11:44", track: "C3" },
-    { id: 4, label: "Unknown #004", confidence: 0.95, timestamp: "2026-06-10 10:02", track: "A12" },
-  ]);
+  const [samples, setSamples] = useState<UnknownSample[]>([])
+  const [status, setStatus] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [labeling, setLabeling] = useState<string | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
+  const fetchSamples = useCallback(async () => {
+    try {
+      const data = await api.unknownSamples()
+      setSamples(data)
+      setStatus(null)
+    } catch {
+      setStatus("API offline...")
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    abortRef.current = controller
+    fetchSamples()
+    const interval = setInterval(fetchSamples, 5000)
+    return () => {
+      controller.abort()
+      clearInterval(interval)
+    }
+  }, [fetchSamples])
+
+  const handleLabel = async (id: string, label: string) => {
+    setLabeling(id)
+    try {
+      await api.labelUnknown(id, label)
+      await fetchSamples()
+    } catch {
+      setStatus("Failed to label sample")
+    } finally {
+      setLabeling(null)
+    }
+  }
 
   return (
-    <div className="min-h-screen p-6">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold">🔍 Unknown Defect Discovery</h1>
-        <p className="text-gray-400 text-sm">Open-set detections that don't match known defect prototypes</p>
-      </header>
-
-      <div className="glass rounded-xl p-6 mb-6">
-        <h2 className="text-lg font-semibold mb-2">Research Insight</h2>
-        <p className="text-gray-400 text-sm">
-          When distance_to_nearest_prototype &gt; threshold AND anomaly_score &gt; threshold,
-          the system returns <code className="text-rail-400">unknown_anomaly</code> instead of forcing
-          assignment to known classes. This enables discovery of novel defect categories.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {samples.map((s) => (
-          <div key={s.id} className="glass rounded-xl p-5 border border-yellow-900/50">
-            <div className="flex items-center justify-between mb-3">
-              <span className="font-mono text-yellow-400">{s.label}</span>
-              <span className="text-xs text-gray-500">{s.timestamp}</span>
-            </div>
-            <div className="flex gap-4 text-sm">
-              <div>
-                <span className="text-gray-500">Confidence</span>
-                <p className="font-mono">{(s.confidence * 100).toFixed(0)}%</p>
-              </div>
-              <div>
-                <span className="text-gray-500">Track</span>
-                <p className="font-mono">{s.track}</p>
-              </div>
-            </div>
-            <div className="mt-3 flex gap-2">
-              <button className="px-3 py-1 text-xs bg-rail-900 text-rail-300 rounded-lg hover:bg-rail-800">
-                Add to Few-Shot Lab
-              </button>
-              <button className="px-3 py-1 text-xs bg-gray-800 text-gray-400 rounded-lg hover:bg-gray-700">
-                View Details
-              </button>
-            </div>
+    <PageContainer
+      title="Unknown Defect Discovery"
+      subtitle="Open-set detections that don't match known defect prototypes"
+      actions={
+        <button
+          onClick={fetchSamples}
+          className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm transition-colors"
+        >
+          <RefreshCw size={14} />
+          Refresh
+        </button>
+      }
+    >
+      <Card className="mb-6">
+        <div className="flex items-start gap-3">
+          <FileQuestion size={20} className="text-yellow-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-yellow-400">Research Insight</p>
+            <p className="text-sm text-gray-400 mt-1">
+              When <code className="text-rail-400">distance &gt; threshold</code> AND{" "}
+              <code className="text-rail-400">anomaly_score &gt; threshold</code>, the system returns{" "}
+              <code className="text-rail-400">unknown_anomaly</code> instead of forcing assignment to known classes.
+            </p>
           </div>
-        ))}
-      </div>
-    </div>
-  );
+        </div>
+      </Card>
+
+      {status && (
+        <div className="flex items-center gap-3 p-4 mb-6 rounded-lg bg-yellow-900/20 border border-yellow-800/40 text-yellow-400 text-sm">
+          <AlertTriangle size={16} className="shrink-0" />
+          <span>{status}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <LoadingSkeleton key={i} variant="card" />
+          ))}
+        </div>
+      ) : samples.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {samples.map((s) => (
+            <Card key={s.id} className="border border-yellow-900/50">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle size={16} className="text-yellow-400" />
+                  <span className="font-mono text-yellow-400 text-sm">{s.id}</span>
+                </div>
+                <Badge variant="warning">Unknown</Badge>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 text-sm mb-4">
+                <div>
+                  <span className="text-gray-500 text-xs">Confidence</span>
+                  <p className="font-mono">{(s.anomaly_score * 100).toFixed(0)}%</p>
+                </div>
+                <div>
+                  <span className="text-gray-500 text-xs">Track</span>
+                  <p className="font-mono">{s.track_id}</p>
+                </div>
+                <div>
+                  <span className="text-gray-500 text-xs">Distance</span>
+                  <p className="font-mono">{s.distance?.toFixed(3) ?? "—"}</p>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                {["crack", "squat", "spalling"].map((label) => (
+                  <button
+                    key={label}
+                    onClick={() => handleLabel(s.id, label)}
+                    disabled={labeling === s.id}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs bg-rail-900/60 text-rail-300 rounded-lg hover:bg-rail-800/60 transition-colors disabled:opacity-50"
+                  >
+                    {labeling === s.id ? <Loader2 size={12} className="animate-spin" /> : <Tag size={12} />}
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <Card>
+          <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+            <Search size={32} className="mb-3" />
+            <p>No unknown anomalies flagged yet</p>
+            <p className="text-xs mt-1">New defect categories will appear here automatically</p>
+          </div>
+        </Card>
+      )}
+    </PageContainer>
+  )
 }

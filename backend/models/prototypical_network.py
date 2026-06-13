@@ -1,96 +1,147 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from typing import List, Tuple, Dict, Optional
-from collections import defaultdict
 
 
-class PrototypicalNetwork(nn.Module):
+def _l2_normalize(embeddings: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(embeddings, axis=-1, keepdims=True)
+    return embeddings / np.maximum(norms, 1e-8)
+
+
+class PrototypicalNetwork:
+    """Nearest-prototype classifier over L2-normalized embeddings.
+
+    Prototypes use the class median (robust to one bad support shot), then are
+    re-normalized so distances stay on the unit sphere ([0, 2] range), which
+    keeps the open-set threshold comparable across domains.
+    """
+
     def __init__(self, embedding_dim: int, n_ways: int, n_shots: int, n_queries: int = 15):
-        super().__init__()
         self.embedding_dim = embedding_dim
         self.n_ways = n_ways
         self.n_shots = n_shots
         self.n_queries = n_queries
         self.prototypes = None
         self.class_names = None
+        self.support_distance_stats = None
 
     def compute_prototypes(self, support_embeddings: np.ndarray, support_labels: np.ndarray, class_names: List[str]):
+        support_embeddings = _l2_normalize(support_embeddings)
         unique_labels = np.unique(support_labels)
         self.prototypes = {}
         self.class_names = class_names
+        support_dists = []
         for label in unique_labels:
             class_embs = support_embeddings[support_labels == label]
-            median_proto = np.median(class_embs, axis=0)
+            median_proto = _l2_normalize(np.median(class_embs, axis=0))
             self.prototypes[int(label)] = median_proto
+            support_dists.extend(np.linalg.norm(class_embs - median_proto, axis=1).tolist())
+        support_dists = np.array(support_dists)
+        self.support_distance_stats = {
+            "mean": float(support_dists.mean()),
+            "std": float(support_dists.std()),
+            "p95": float(np.percentile(support_dists, 95)),
+        }
         return self
+
+    def calibrated_threshold(self, n_sigmas: float = 3.0, floor: float = 0.05) -> float:
+        """Open-set distance threshold derived from the support set itself:
+        mean + n_sigmas * std of support-to-own-prototype distances."""
+        if self.support_distance_stats is None:
+            return 1.0
+        s = self.support_distance_stats
+        return max(s["mean"] + n_sigmas * s["std"], s["p95"], floor)
+
+    def _distances(self, query_embeddings: np.ndarray) -> Tuple[np.ndarray, List[int]]:
+        keys = sorted(self.prototypes.keys())
+        proto_array = np.array([self.prototypes[k] for k in keys])
+        query_embeddings = _l2_normalize(query_embeddings)
+        distances = np.linalg.norm(query_embeddings[:, np.newaxis, :] - proto_array[np.newaxis, :, :], axis=2)
+        return distances, keys
 
     def classify(self, query_embeddings: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         if self.prototypes is None:
             raise RuntimeError("Prototypes not computed. Call compute_prototypes() first.")
-        proto_array = np.array([self.prototypes[k] for k in sorted(self.prototypes.keys())])
-        distances = np.linalg.norm(query_embeddings[:, np.newaxis, :] - proto_array[np.newaxis, :, :], axis=2)
-        preds = np.argmin(distances, axis=1)
-        confidences = 1.0 / (1.0 + distances)
-        confidence_scores = np.max(confidences, axis=1)
-        return preds, confidence_scores
+        distances, keys = self._distances(query_embeddings)
+        preds = np.array([keys[i] for i in np.argmin(distances, axis=1)])
+        confidences = 1.0 / (1.0 + np.min(distances, axis=1))
+        return preds, confidences
 
-    def open_set_classify(self, query_embeddings: np.ndarray, distance_threshold: float = 2.0) -> List[Dict]:
+    def open_set_classify(self, query_embeddings: np.ndarray, distance_threshold: Optional[float] = None) -> List[Dict]:
         if self.prototypes is None:
             raise RuntimeError("Prototypes not computed.")
-        proto_array = np.array([self.prototypes[k] for k in sorted(self.prototypes.keys())])
-        distances = np.linalg.norm(query_embeddings[:, np.newaxis, :] - proto_array[np.newaxis, :, :], axis=2)
+        if distance_threshold is None:
+            distance_threshold = self.calibrated_threshold()
+        distances, keys = self._distances(query_embeddings)
         min_distances = np.min(distances, axis=1)
-        pred_indices = np.argmin(distances, axis=1)
-        results = []
+        pred_keys = [keys[i] for i in np.argmin(distances, axis=1)]
         label_map = {i: name for i, name in enumerate(self.class_names)} if self.class_names else {}
-        for i, (dist, pred_idx) in enumerate(zip(min_distances, pred_indices)):
+        results = []
+        for dist, pred_key in zip(min_distances, pred_keys):
+            confidence = float(1.0 / (1.0 + dist))
             if dist > distance_threshold:
-                results.append({"label": "unknown_anomaly", "confidence": float(1.0 / (1.0 + dist)), "distance": float(dist)})
+                results.append({"label": "unknown_anomaly", "confidence": confidence, "distance": float(dist)})
             else:
-                class_name = label_map.get(int(pred_idx), f"class_{pred_idx}")
-                results.append({"label": class_name, "confidence": float(1.0 / (1.0 + dist)), "distance": float(dist)})
+                class_name = label_map.get(int(pred_key), f"class_{pred_key}")
+                results.append({"label": class_name, "confidence": confidence, "distance": float(dist)})
         return results
 
 
 class EpisodicSampler:
-    def __init__(self, embeddings: Dict[str, np.ndarray], n_ways: int, n_shots: int, n_queries: int = 15):
-        self.embeddings = embeddings
-        self.class_names = list(embeddings.keys())
+    """Samples N-way K-shot episodes with disjoint support/query sets.
+
+    A class is only eligible if it has at least n_shots + 1 samples, so the
+    reported K-shot number is the real one (no silent shot reduction).
+    """
+
+    def __init__(self, embeddings: Dict[str, np.ndarray], n_ways: int, n_shots: int, n_queries: int = 15, seed: Optional[int] = None):
+        self.embeddings = {k: np.asarray(v) for k, v in embeddings.items()}
         self.n_ways = n_ways
         self.n_shots = n_shots
         self.n_queries = n_queries
+        self.rng = np.random.default_rng(seed)
+        self.eligible_classes = [c for c, e in self.embeddings.items() if len(e) >= n_shots + 1]
+        if len(self.eligible_classes) < n_ways:
+            raise ValueError(
+                f"Only {len(self.eligible_classes)} classes have >= {n_shots + 1} samples; "
+                f"cannot run {n_ways}-way {n_shots}-shot episodes. "
+                f"Eligible: {self.eligible_classes}"
+            )
 
-    def sample_episode(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
-        selected_classes = np.random.choice(self.class_names, self.n_ways, replace=False)
-        support_x, support_y = [], []
-        query_x, query_y = [], []
-        episode_classes = []
-        for label_idx, class_name in enumerate(selected_classes):
+    def sample_episode(self, n_extra_open_set: int = 0) -> Dict:
+        """Returns an episode dict. If n_extra_open_set > 0, that many extra
+        classes are held out: their queries get label -1 (true unknowns) and
+        they contribute no support shots."""
+        total = self.n_ways + n_extra_open_set
+        if len(self.eligible_classes) < total:
+            n_extra_open_set = len(self.eligible_classes) - self.n_ways
+            total = self.n_ways + n_extra_open_set
+        selected = list(self.rng.choice(self.eligible_classes, total, replace=False))
+        known_classes, unknown_classes = selected[:self.n_ways], selected[self.n_ways:]
+
+        support_x, support_y, query_x, query_y = [], [], [], []
+        for label_idx, class_name in enumerate(known_classes):
             class_embs = self.embeddings[class_name]
-            n_total = len(class_embs)
-            n_support = min(self.n_shots, n_total // 2)
-            n_query = min(self.n_queries, n_total - n_support)
-            if n_support < 1 or n_query < 1:
-                continue
-            indices = np.random.permutation(n_total)
-            support_indices = indices[:n_support]
-            query_indices = indices[n_support:n_support + n_query]
-            support_x.append(class_embs[support_indices])
-            support_y.extend([label_idx] * n_support)
-            query_x.append(class_embs[query_indices])
+            indices = self.rng.permutation(len(class_embs))
+            n_query = min(self.n_queries, len(class_embs) - self.n_shots)
+            support_x.append(class_embs[indices[:self.n_shots]])
+            support_y.extend([label_idx] * self.n_shots)
+            query_x.append(class_embs[indices[self.n_shots:self.n_shots + n_query]])
             query_y.extend([label_idx] * n_query)
-            episode_classes.append(class_name)
-        if not support_x:
-            return self.sample_episode()
-        return (
-            np.concatenate(support_x, axis=0),
-            np.array(support_y),
-            np.concatenate(query_x, axis=0),
-            np.array(query_y),
-            episode_classes,
-        )
+        for class_name in unknown_classes:
+            class_embs = self.embeddings[class_name]
+            indices = self.rng.permutation(len(class_embs))
+            n_query = min(self.n_queries, len(class_embs))
+            query_x.append(class_embs[indices[:n_query]])
+            query_y.extend([-1] * n_query)
+
+        return {
+            "support_x": np.concatenate(support_x, axis=0),
+            "support_y": np.array(support_y),
+            "query_x": np.concatenate(query_x, axis=0),
+            "query_y": np.array(query_y),
+            "class_names": known_classes,
+            "unknown_classes": unknown_classes,
+        }
 
 
 def evaluate_few_shot(
@@ -99,39 +150,55 @@ def evaluate_few_shot(
     n_shots: int,
     n_episodes: int = 100,
     embedding_dim: Optional[int] = None,
-    distance_threshold: float = 2.0,
-    open_set_classes: Optional[List[str]] = None,
+    distance_threshold: Optional[float] = None,
+    open_set: bool = False,
+    seed: Optional[int] = 42,
 ) -> Dict:
-    sampler = EpisodicSampler(embeddings, n_ways, n_shots)
-    accuracies = []
-    open_set_detections = []
+    """Episodic evaluation: mean ± std (and 95% CI) over n_episodes.
+
+    With open_set=True, each episode holds out one extra class as a true
+    unknown; reports closed-set accuracy on known queries plus unknown
+    detection rate (recall) and false-unknown rate on knowns.
+    """
+    n_ways = min(n_ways, max(2, len([c for c, e in embeddings.items() if len(np.asarray(e)) >= n_shots + 1]) - (1 if open_set else 0)))
+    sampler = EpisodicSampler(embeddings, n_ways, n_shots, seed=seed)
+    accuracies, unknown_recalls, false_unknown_rates = [], [], []
 
     for _ in range(n_episodes):
-        s_x, s_y, q_x, q_y, class_names = sampler.sample_episode()
-        if len(s_x) == 0:
-            continue
+        ep = sampler.sample_episode(n_extra_open_set=1 if open_set else 0)
         model = PrototypicalNetwork(
-            embedding_dim=embedding_dim or s_x.shape[1],
-            n_ways=len(np.unique(s_y)),
+            embedding_dim=embedding_dim or ep["support_x"].shape[1],
+            n_ways=len(ep["class_names"]),
             n_shots=n_shots,
         )
-        model.compute_prototypes(s_x, s_y, class_names)
-        if open_set_classes:
-            results = model.open_set_classify(q_x, distance_threshold)
-            preds = np.array([0 if r["label"] == "unknown_anomaly" else class_names.index(r["label"]) for r in results])
-            for i, r in enumerate(results):
-                if r["label"] == "unknown_anomaly" and q_y[i] >= len(class_names):
-                    open_set_detections.append(1)
-                elif r["label"] != "unknown_anomaly" and q_y[i] < len(class_names):
-                    open_set_detections.append(0)
+        model.compute_prototypes(ep["support_x"], ep["support_y"], ep["class_names"])
+        q_y = ep["query_y"]
+
+        if open_set:
+            results = model.open_set_classify(ep["query_x"], distance_threshold)
+            name_to_idx = {name: i for i, name in enumerate(ep["class_names"])}
+            preds = np.array([-1 if r["label"] == "unknown_anomaly" else name_to_idx[r["label"]] for r in results])
+            known_mask = q_y >= 0
+            if known_mask.any():
+                accuracies.append(float(np.mean(preds[known_mask] == q_y[known_mask])))
+                false_unknown_rates.append(float(np.mean(preds[known_mask] == -1)))
+            if (~known_mask).any():
+                unknown_recalls.append(float(np.mean(preds[~known_mask] == -1)))
         else:
-            preds, _ = model.classify(q_x)
-        correct = np.sum(preds == q_y)
-        accuracies.append(correct / len(q_y))
+            preds, _ = model.classify(ep["query_x"])
+            accuracies.append(float(np.mean(preds == q_y)))
 
     mean_acc = float(np.mean(accuracies)) if accuracies else 0.0
     std_acc = float(np.std(accuracies)) if accuracies else 0.0
-    result = {"mean_accuracy": mean_acc, "std_accuracy": std_acc, "n_episodes": len(accuracies)}
-    if open_set_detections:
-        result["open_set_detection_rate"] = float(np.mean(open_set_detections))
+    result = {
+        "mean_accuracy": mean_acc,
+        "std_accuracy": std_acc,
+        "ci_95": float(1.96 * std_acc / np.sqrt(max(len(accuracies), 1))),
+        "n_episodes": len(accuracies),
+        "n_ways": n_ways,
+        "n_shots": n_shots,
+    }
+    if open_set:
+        result["open_set_detection_rate"] = float(np.mean(unknown_recalls)) if unknown_recalls else 0.0
+        result["false_unknown_rate"] = float(np.mean(false_unknown_rates)) if false_unknown_rates else 0.0
     return result

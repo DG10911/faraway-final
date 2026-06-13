@@ -1,0 +1,89 @@
+{
+  "patchcore": {
+    "n_healthy_tokens": 72448,
+    "memory_bank_size": 7244,
+    "threshold": 0.21819445490837097
+  },
+  "few_shot": {
+    "closed_set": {
+      "mean_accuracy": 0.5472516594516594,
+      "std_accuracy": 0.12276003314759329,
+      "ci_95": 0.024060966496928286,
+      "n_episodes": 100,
+      "n_ways": 5,
+      "n_shots": 5
+    },
+    "open_set": {
+      "mean_accuracy": 0.5112972582972583,
+      "std_accuracy": 0.10977218767403112,
+      "ci_95": 0.021515348784110096,
+      "n_episodes": 100,
+      "n_ways": 5,
+      "n_shots": 5,
+      "open_set_detection_rate": 0.07157575757575757,
+      "false_unknown_rate": 0.013198268398268398
+    }
+  },
+  "conformal": {
+    "calibration": {
+      "threshold": 0.5243593454360962,
+      "target_recall": 0.95,
+      "guaranteed_recall": 0.95,
+      "n_calibration": 2560,
+      "guarantee_achievable": true,
+      "note": "P(defect score >= threshold) >= guaranteed_recall, finite-sample, distribution-free"
+    },
+    "held_out_operating_point": {
+      "threshold": 0.5243593454360962,
+      "empirical_recall": 0.955078125,
+      "false_positive_rate": 0.0,
+      "n_defect": 2560,
+      "n_healthy": 274
+    }
+  },
+  "ablation": {
+    "protocol": "5-way 5-shot, 100 episodes, mean \u00b1 std (95% CI)",
+    "ResNet18 + NearestCentroid": {
+      "mean_accuracy": 0.4461526695526695,
+      "std_accuracy": 0.09844169749356164,
+      "ci_95": 0.01929457270873808,
+      "n_episodes": 100,
+      "n_ways": 5,
+      "n_shots": 5
+    },
+    "ResNet18 + LinearProbe (transfer learning)": {
+      "mean_accuracy": 0.5237982683982684,
+      "std_accuracy": 0.11465190758655011,
+      "ci_95": 0.022471773886963822,
+      "n_episodes": 100,
+      "n_ways": 5,
+      "n_shots": 5
+    },
+    "DINOv2 + LinearProbe": {
+      "mean_accuracy": 0.5637512265512266,
+      "std_accuracy": 0.13082692636579887,
+      "ci_95": 0.02564207756769658,
+      "n_episodes": 100,
+      "n_ways": 5,
+      "n_shots": 5
+    },
+    "DINOv2 + Prototypical (ours)": {
+      "mean_accuracy": 0.5472516594516594,
+      "std_accuracy": 0.12276003314759329,
+      "ci_95": 0.024060966496928286,
+      "n_episodes": 100,
+      "n_ways": 5,
+      "n_shots": 5
+    },
+    "DINOv2 + Prototypical + OpenSet (ours)": {
+      "mean_accuracy": 0.5112972582972583,
+      "std_accuracy": 0.10977218767403112,
+      "ci_95": 0.021515348784110096,
+      "n_episodes": 100,
+      "n_ways": 5,
+      "n_shots": 5,
+      "open_set_detection_rate": 0.07157575757575757,
+      "false_unknown_rate": 0.013198268398268398
+    }
+  }
+}

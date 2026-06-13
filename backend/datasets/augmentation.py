@@ -1,4 +1,5 @@
 import albumentations as A
+import cv2
 import numpy as np
 from typing import List, Callable
 
@@ -40,6 +41,3 @@ def generate_synthetic_bright_streaks(image: np.ndarray, n_streaks: int = 3) -> 
         y2 = int(y + length * np.sin(np.radians(angle)))
         cv2.line(result, (x, y), (x2, y2), (brightness, brightness, brightness), thickness)
     return result
-
-
-import cv2

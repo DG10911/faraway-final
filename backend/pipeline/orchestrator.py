@@ -1,7 +1,13 @@
+import base64
+import time
+import uuid
+from collections import deque
+from datetime import datetime
+from typing import Dict, List, Optional
+
 import cv2
 import numpy as np
-from typing import Dict, List, Optional, Tuple
-from pathlib import Path
+import torch
 
 from .phase1_input_validation import InputValidator
 from .phase2_rail_extraction import RailExtractor
@@ -12,15 +18,20 @@ from ..models.prototypical_network import PrototypicalNetwork, evaluate_few_shot
 from ..models.open_set_recognizer import OpenSetRecognizer
 from ..models.severity_estimator import SeverityEstimator
 from ..utils.embeddings_db import EmbeddingDatabase
-from ..utils.hard_negatives import HardNegativeManager, HARD_NEGATIVE_CLASSES
+from ..utils.hard_negatives import HardNegativeManager
 from ..utils.explainability import ExplainabilityEngine
 from ..twins.digital_twin import DigitalTwinManager
 from ..evaluation.metrics import Evaluator
 
 
 class RailGuardFSL:
+    """Two-stage pipeline: healthy-only PatchCore screening on DINOv2 patch
+    tokens, then few-shot prototypical classification (with open-set
+    rejection) on the CLS embeddings of anomalous patches only."""
+
     def __init__(self, device: Optional[str] = None):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        from ..utils.device import resolve_device
+        self.device = resolve_device(device)
         self.validator = InputValidator()
         self.extractor = RailExtractor()
         self.patcher = PatchPipeline()
@@ -36,133 +47,244 @@ class RailGuardFSL:
         self.evaluator = Evaluator()
         self.initialized = False
 
-    def initialize(self, healthy_embeddings: np.ndarray, threshold_percentile: float = 95.0):
-        self.anomaly_detector.fit(healthy_embeddings, threshold_percentile)
+        self.unknown_samples: List[Dict] = []
+        self.stats = {
+            "frames_processed": 0,
+            "frames_rejected": 0,
+            "anomalies_found": 0,
+            "defects_confirmed": 0,
+            "unknowns_flagged": 0,
+        }
+        self._latencies = deque(maxlen=50)
+        self.alerts = deque(maxlen=20)
+
+    # ------------------------------------------------------------------ setup
+
+    def initialize(self, healthy_features: np.ndarray, threshold_percentile: float = 95.0):
+        """healthy_features: (n, dim) CLS features or (n, tokens, dim) /
+        flattened token features from healthy rail only."""
+        self.anomaly_detector.fit(healthy_features, threshold_percentile)
         self.initialized = True
 
-    def process_frame(self, image: np.ndarray, track_id: str = "unknown", location_m: float = 0.0) -> Dict:
+    def embed_image(self, image: np.ndarray) -> Optional[Dict]:
+        """Validation -> rail crop -> patches -> CLS + token features."""
         validation = self.validator.validate(image)
         if validation["status"] != "valid":
+            return None
+        rail_region = self.extractor.extract_rail_region(image)
+        if rail_region is None:
+            return None
+        patches = self.patcher.extract_patches(rail_region)
+        patch_images = [p for p, _ in patches]
+        return {
+            "rail_region": rail_region,
+            "patch_coords": [c for _, c in patches],
+            "cls": self.encoder.embed_patches(patch_images),
+            "tokens": self.encoder.embed_patch_tokens(patch_images),
+        }
+
+    # -------------------------------------------------------------- inference
+
+    def process_frame(self, image: np.ndarray, track_id: str = "unknown", location_m: float = 0.0) -> Dict:
+        start = time.time()
+        self.stats["frames_processed"] += 1
+
+        validation = self.validator.validate(image)
+        if validation["status"] != "valid":
+            self.stats["frames_rejected"] += 1
             return validation
 
         rail_region = self.extractor.extract_rail_region(image)
         if rail_region is None:
+            self.stats["frames_rejected"] += 1
             return {"status": "error", "reason": "rail_extraction_failed"}
 
         patches = self.patcher.extract_patches(rail_region)
         patch_images = [p for p, _ in patches]
         patch_coords = [c for _, c in patches]
 
-        embeddings = self.encoder.embed_patches(patch_images)
+        token_features = self.encoder.embed_patch_tokens(patch_images)
 
         if not self.initialized:
             return {"status": "not_initialized", "patches_extracted": len(patches)}
 
-        anomaly_result = self.anomaly_detector.predict(embeddings, patch_coords, rail_region.shape[:2])
+        anomaly_result = self.anomaly_detector.predict(token_features, patch_coords, rail_region.shape[:2])
+        heatmap = self.explainability.generate_anomaly_heatmap(rail_region, anomaly_result["anomaly_map"])
+        attention = self.explainability.generate_attention_map(self.encoder, rail_region)
+        self._latencies.append((time.time() - start) * 1000)
+
+        base = {
+            "anomaly_score": anomaly_result["anomaly_score"],
+            "anomaly_threshold": anomaly_result["threshold"],
+            "heatmap": heatmap,
+            "attention": attention,
+            "anomaly_mask": anomaly_result["anomaly_mask"],
+        }
 
         if not anomaly_result["is_anomaly"]:
-            heatmap = self.explainability.generate_anomaly_heatmap(
-                rail_region, anomaly_result["anomaly_map"]
-            )
-            return {
-                "status": "healthy",
-                "anomaly_score": anomaly_result["anomaly_score"],
-                "heatmap": heatmap,
-            }
+            return {"status": "healthy", **base}
 
-        if self.few_shot_classifier is not None and self.few_shot_classifier.prototypes is not None:
-            open_set_results = self.few_shot_classifier.open_set_classify(
-                embeddings, self.open_set_recognizer.distance_threshold
-            )
-            primary_result = max(open_set_results, key=lambda x: x["confidence"])
-            label = primary_result["label"]
-            confidence = primary_result["confidence"]
+        self.stats["anomalies_found"] += 1
 
-            if label != "unknown_anomaly":
-                hard_neg = self.hard_negative_mgr.has_hard_negative(embeddings.mean(axis=0))
-                if hard_neg:
-                    return {
-                        "status": "healthy",
-                        "anomaly_score": anomaly_result["anomaly_score"],
-                        "note": "hard_negative_suppressed",
-                    }
+        # Stage 2 operates only on the patches PatchCore flagged, so a tiny
+        # defect is not averaged away by the healthy majority of the frame.
+        patch_scores = np.array(anomaly_result["patch_scores"])
+        anomalous_idx = np.where(patch_scores > anomaly_result["threshold"])[0]
+        if len(anomalous_idx) == 0:
+            anomalous_idx = np.array([int(np.argmax(patch_scores))])
+        cls_features = self.encoder.embed_patches([patch_images[i] for i in anomalous_idx])
 
+        hard_neg_flags = [self.hard_negative_mgr.has_hard_negative(emb) for emb in cls_features]
+        if hard_neg_flags and all(hard_neg_flags):
+            return {"status": "healthy", "note": "hard_negative_suppressed", **base}
+
+        if self.few_shot_classifier is None or self.few_shot_classifier.prototypes is None:
             severity = self.severity_estimator.estimate(
-                anomaly_result["anomaly_score"],
-                anomaly_result["anomaly_mask"],
-                confidence,
+                anomaly_result["anomaly_score"], anomaly_result["anomaly_mask"], 0.5
             )
+            self._record_unknown(rail_region, cls_features, track_id, anomaly_result["anomaly_score"], distance=None)
+            return {"status": "anomaly_detected_unclassified", "severity": severity, **base}
 
-            twin_result = self.twin_mgr.report_defect(
-                track_id=track_id,
-                location_m=location_m,
-                defect_type=label,
-                severity=severity["severity"],
-                anomaly_score=anomaly_result["anomaly_score"],
-                confidence=confidence,
-            )
+        results = self.few_shot_classifier.open_set_classify(cls_features)
+        known = [r for r in results if r["label"] != "unknown_anomaly"]
 
-            heatmap = self.explainability.generate_anomaly_heatmap(
-                rail_region, anomaly_result["anomaly_map"]
-            )
-            grad_cam = self.explainability.generate_gradcam(
-                self.encoder.model, rail_region
-            ) if hasattr(self.encoder.model, "get_activations_gradient") else heatmap
-
-            return {
-                "status": "defect_detected",
-                "label": label,
-                "confidence": confidence,
-                "anomaly_score": anomaly_result["anomaly_score"],
-                "severity": severity,
-                "patch_coords": patch_coords,
-                "failure_risk": twin_result["failure_risk_pct"],
-                "event_id": twin_result["event_id"],
-                "priority_rank": twin_result["priority_rankings"][0]["priority_rank"] if twin_result["priority_rankings"] else "N/A",
-                "heatmap": heatmap,
-                "gradcam": grad_cam,
-                "anomaly_mask": anomaly_result["anomaly_mask"],
-            }
-        else:
+        if not known:
+            primary = max(results, key=lambda r: r["confidence"])
             severity = self.severity_estimator.estimate(
-                anomaly_result["anomaly_score"],
-                anomaly_result["anomaly_mask"],
-                0.5,
+                anomaly_result["anomaly_score"], anomaly_result["anomaly_mask"], primary["confidence"]
             )
-            heatmap = self.explainability.generate_anomaly_heatmap(
-                rail_region, anomaly_result["anomaly_map"]
-            )
+            self._record_unknown(rail_region, cls_features, track_id, anomaly_result["anomaly_score"], primary["distance"])
+            self._add_alert(f"Unknown anomaly on {track_id} at {location_m:.0f}m")
             return {
-                "status": "anomaly_detected_unclassified",
-                "anomaly_score": anomaly_result["anomaly_score"],
+                "status": "unknown_anomaly",
+                "label": "unknown_anomaly",
+                "confidence": primary["confidence"],
                 "severity": severity,
-                "heatmap": heatmap,
-                "anomaly_mask": anomaly_result["anomaly_mask"],
+                **base,
             }
 
-    def setup_few_shot(self, support_embeddings: Dict[str, np.ndarray], n_shots: int = 5):
-        all_embs = []
-        all_labels = []
-        class_names = []
-        for label_idx, (class_name, embs) in enumerate(support_embeddings.items()):
-            if len(embs) >= n_shots:
-                all_embs.append(embs[:n_shots])
-                all_labels.extend([label_idx] * n_shots)
-                class_names.append(class_name)
+        # Majority vote across anomalous patches; primary = highest confidence.
+        labels = [r["label"] for r in known]
+        label = max(set(labels), key=labels.count)
+        confidence = float(np.mean([r["confidence"] for r in known if r["label"] == label]))
+
+        severity = self.severity_estimator.estimate(
+            anomaly_result["anomaly_score"], anomaly_result["anomaly_mask"], confidence
+        )
+        twin_result = self.twin_mgr.report_defect(
+            track_id=track_id,
+            location_m=location_m,
+            defect_type=label,
+            severity=severity["severity"],
+            anomaly_score=anomaly_result["anomaly_score"],
+            confidence=confidence,
+        )
+        self.stats["defects_confirmed"] += 1
+        self._add_alert(f"{label.capitalize()} detected on {track_id} at {location_m:.0f}m ({severity['severity']})")
+
+        return {
+            "status": "defect_detected",
+            "label": label,
+            "confidence": confidence,
+            "severity": severity,
+            "patch_coords": [patch_coords[i] for i in anomalous_idx],
+            "failure_risk": twin_result["failure_risk_pct"],
+            "event_id": twin_result["event_id"],
+            "priority_rank": twin_result["priority_rankings"][0]["priority_rank"] if twin_result["priority_rankings"] else "N/A",
+            **base,
+        }
+
+    # ------------------------------------------------------------- few-shot
+
+    def setup_few_shot(self, support_embeddings: Dict[str, np.ndarray], n_shots: Optional[int] = 5):
+        """n_shots=None uses every available embedding per class (used when
+        incrementally labeling discovered unknowns)."""
+        all_embs, all_labels, class_names = [], [], []
+        for class_name, embs in support_embeddings.items():
+            embs = np.asarray(embs)
+            if len(embs) == 0:
+                continue
+            take = len(embs) if n_shots is None else min(n_shots, len(embs))
+            if n_shots is not None and len(embs) < n_shots:
+                continue
+            label_idx = len(class_names)
+            all_embs.append(embs[:take])
+            all_labels.extend([label_idx] * take)
+            class_names.append(class_name)
         if not all_embs:
             return False
         all_embs = np.concatenate(all_embs, axis=0)
-        all_labels = np.array(all_labels)
         self.few_shot_classifier = PrototypicalNetwork(
             embedding_dim=all_embs.shape[1],
             n_ways=len(class_names),
-            n_shots=n_shots,
+            n_shots=n_shots or 0,
         )
-        self.few_shot_classifier.compute_prototypes(all_embs, all_labels, class_names)
+        self.few_shot_classifier.compute_prototypes(all_embs, np.array(all_labels), class_names)
         return True
 
-    def evaluate_few_shot_performance(self, all_embeddings: Dict[str, np.ndarray], n_ways: int = 5, n_shots: int = 5, n_episodes: int = 100):
-        return evaluate_few_shot(all_embeddings, n_ways, n_shots, n_episodes)
+    def evaluate_few_shot_performance(self, all_embeddings: Dict[str, np.ndarray], n_ways: int = 5, n_shots: int = 5, n_episodes: int = 100, open_set: bool = False):
+        return evaluate_few_shot(all_embeddings, n_ways, n_shots, n_episodes, open_set=open_set)
 
+    # ------------------------------------------------------------- discovery
 
-import torch
+    def _record_unknown(self, rail_region: np.ndarray, cls_features: np.ndarray, track_id: str, anomaly_score: float, distance: Optional[float]):
+        thumb = cv2.resize(rail_region, (192, max(1, int(192 * rail_region.shape[0] / max(rail_region.shape[1], 1)))))
+        ok, buf = cv2.imencode(".png", cv2.cvtColor(thumb, cv2.COLOR_RGB2BGR))
+        self.stats["unknowns_flagged"] += 1
+        self.unknown_samples.append({
+            "id": uuid.uuid4().hex[:8],
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "track_id": track_id,
+            "anomaly_score": round(float(anomaly_score), 4),
+            "distance": round(float(distance), 4) if distance is not None else None,
+            "thumbnail_b64": base64.b64encode(buf).decode("utf-8") if ok else None,
+            "embedding": cls_features.mean(axis=0),
+            "labeled_as": None,
+        })
+
+    def label_unknown(self, unknown_id: str, label: str) -> bool:
+        """The discovery flywheel: a flagged unknown gets a human label and
+        immediately becomes a few-shot support example for that class."""
+        sample = next((s for s in self.unknown_samples if s["id"] == unknown_id), None)
+        if sample is None:
+            return False
+        existing = self.embedding_db.get(label)
+        emb = sample["embedding"][np.newaxis, :]
+        combined = np.concatenate([existing, emb], axis=0) if existing is not None else emb
+        self.embedding_db.store(label, combined)
+        sample["labeled_as"] = label
+        support = {k: v for k, v in self.embedding_db.get_all().items() if k != "healthy_tokens"}
+        self.setup_few_shot(support, n_shots=None)
+        return True
+
+    def get_unknowns(self) -> List[Dict]:
+        return [
+            {k: v for k, v in s.items() if k != "embedding"}
+            for s in self.unknown_samples
+            if s["labeled_as"] is None
+        ]
+
+    # ----------------------------------------------------------------- stats
+
+    def _add_alert(self, message: str):
+        self.alerts.appendleft({"message": message, "timestamp": datetime.now().strftime("%H:%M:%S")})
+
+    def get_stats(self) -> Dict:
+        avg_latency = float(np.mean(self._latencies)) if self._latencies else None
+        return {
+            **self.stats,
+            "avg_latency_ms": round(avg_latency, 1) if avg_latency else None,
+            "throughput_fps": round(1000.0 / avg_latency, 2) if avg_latency else None,
+            "initialized": self.initialized,
+            "few_shot_ready": self.few_shot_classifier is not None,
+            "alerts": list(self.alerts),
+        }
+
+    def get_defect_distribution(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for segment in self.twin_mgr.segments.values():
+            for defect in segment.defects:
+                counts[defect.defect_type] = counts.get(defect.defect_type, 0) + 1
+        if self.stats["unknowns_flagged"]:
+            counts["unknown"] = counts.get("unknown", 0) + self.stats["unknowns_flagged"]
+        return counts

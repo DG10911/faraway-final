@@ -1,5 +1,2 @@
-from .dinov2_encoder import DINOv2Encoder
-from .patchcore_anomaly import PatchCoreMemory, PatchCoreDetector
-from .prototypical_network import PrototypicalNetwork, EpisodicSampler, evaluate_few_shot
-from .open_set_recognizer import OpenSetRecognizer
-from .severity_estimator import SeverityEstimator
+# Modules are imported by full path (e.g. backend.models.prototypical_network)
+# so that numpy-only components stay importable without torch/cv2 installed.

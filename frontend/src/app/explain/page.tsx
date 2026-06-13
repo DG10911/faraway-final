@@ -1,83 +1,175 @@
-"use client";
+"use client"
 
-import { useState } from "react";
+import { useState, useCallback } from "react"
+import { useDropzone } from "react-dropzone"
+import { Eye, Image as ImageIcon, Upload, Loader2, Download, Thermometer, Target, Grid3X3 } from "lucide-react"
+import { PageContainer } from "@/components/layout/PageContainer"
+import { Card } from "@/components/ui/Card"
+import { Badge } from "@/components/ui/Badge"
+import { api } from "@/lib/api"
+import type { DetectionResult, ViewKey } from "@/lib/types"
+
+const VIEWS: { key: ViewKey; label: string; icon: typeof Eye; desc: string }[] = [
+  { key: "heatmap", label: "Anomaly Heatmap", icon: Thermometer, desc: "PatchCore anomaly scores per region" },
+  { key: "attention", label: "Attention Map", icon: Target, desc: "DINOv2 self-attention visualization" },
+  { key: "mask", label: "Anomaly Mask", icon: Grid3X3, desc: "Binary anomaly segmentation mask" },
+]
 
 export default function ExplainabilityPage() {
-  const [selectedView, setSelectedView] = useState<"gradcam" | "attention" | "heatmap">("heatmap");
+  const [selectedView, setSelectedView] = useState<ViewKey>("heatmap")
+  const [result, setResult] = useState<DetectionResult | null>(null)
+  const [preview, setPreview] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    const file = acceptedFiles[0]
+    if (!file) return
+    setPreview(URL.createObjectURL(file))
+    setLoading(true)
+    setResult(null)
+
+    try {
+      const data = await api.detect(file)
+      setResult(data)
+    } catch {
+      setResult({ status: "error", reason: "API unreachable" })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { "image/*": [".png", ".jpg", ".jpeg"] },
+    maxFiles: 1,
+  })
+
+  const getImageSrc = () => {
+    if (!result) return null
+    if (selectedView === "heatmap" && result.heatmap_b64) return `data:image/png;base64,${result.heatmap_b64}`
+    if (selectedView === "attention" && result.gradcam_b64) return `data:image/png;base64,${result.gradcam_b64}`
+    if (selectedView === "mask" && result.anomaly_mask_b64) return `data:image/png;base64,${result.anomaly_mask_b64}`
+    return null
+  }
+
+  const getRationale = () => {
+    if (selectedView === "heatmap") return "Regions with high anomaly scores (red) indicate deviations from healthy rail memory bank."
+    if (selectedView === "attention") return "Grad-CAM highlights pixels that most influenced the classifier's decision."
+    return "Binary mask showing regions classified as anomalous above threshold."
+  }
+
+  const imageSrc = getImageSrc()
 
   return (
-    <div className="min-h-screen p-6">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold">🔬 Explainability Viewer</h1>
-        <p className="text-gray-400 text-sm">Visualizing why defects were detected</p>
-      </header>
-
+    <PageContainer title="Explainability Viewer" subtitle="Visualizing why defects were detected">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="glass rounded-xl p-6">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Visualization Type</h2>
-          <div className="space-y-2">
-            {[
-              { key: "heatmap", label: "Anomaly Heatmap", desc: "PatchCore anomaly scores per region" },
-              { key: "gradcam", label: "Grad-CAM", desc: "Gradient-weighted class activation" },
-              { key: "attention", label: "Attention Maps", desc: "DINOv2 self-attention visualization" },
-            ].map((v) => (
-              <button
-                key={v.key}
-                onClick={() => setSelectedView(v.key as any)}
-                className={`w-full text-left p-3 rounded-lg transition-colors ${
-                  selectedView === v.key ? "bg-rail-900 border border-rail-700" : "bg-gray-900 hover:bg-gray-800"
-                }`}
-              >
-                <p className="font-medium text-sm">{v.label}</p>
-                <p className="text-xs text-gray-500 mt-1">{v.desc}</p>
-              </button>
-            ))}
-          </div>
-
-          <div className="mt-6">
-            <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Sample Image</h3>
-            <div className="aspect-square bg-gray-900 rounded-lg border border-gray-800 flex items-center justify-center">
-              <span className="text-6xl">🛤️</span>
+        <div className="space-y-4">
+          <Card>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Visualization</h2>
+            <div className="space-y-2">
+              {VIEWS.map((v) => {
+                const Icon = v.icon
+                return (
+                  <button
+                    key={v.key}
+                    onClick={() => setSelectedView(v.key)}
+                    className={`w-full text-left p-3 rounded-lg transition-colors ${
+                      selectedView === v.key ? "bg-rail-900 border border-rail-700" : "bg-gray-900 hover:bg-gray-800"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Icon size={16} className={selectedView === v.key ? "text-rail-400" : "text-gray-400"} />
+                      <p className="font-medium text-sm">{v.label}</p>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1 ml-7">{v.desc}</p>
+                  </button>
+                )
+              })}
             </div>
-          </div>
+          </Card>
+
+          <Card>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Upload Image</h2>
+            <div
+              {...getRootProps()}
+              className={`aspect-square bg-gray-900 rounded-lg border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all ${
+                isDragActive ? "border-rail-400 bg-rail-900/20" : "border-gray-700 hover:border-gray-500"
+              }`}
+            >
+              <input {...getInputProps()} />
+              {preview ? (
+                <img src={preview} alt="Upload" className="w-full h-full object-cover rounded-lg" />
+              ) : (
+                <>
+                  <Upload size={24} className="text-gray-500 mb-2" />
+                  <p className="text-xs text-gray-500">Click or drop image</p>
+                </>
+              )}
+            </div>
+          </Card>
         </div>
 
-        <div className="lg:col-span-2 glass rounded-xl p-6">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
-            {selectedView === "heatmap" && "Anomaly Heatmap"}
-            {selectedView === "gradcam" && "Grad-CAM Visualization"}
-            {selectedView === "attention" && "Attention Map"}
-          </h2>
+        <div className="lg:col-span-2 space-y-4">
+          <Card>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Eye size={18} className="text-rail-400" />
+                <h2 className="font-semibold">
+                  {VIEWS.find((v) => v.key === selectedView)?.label}
+                </h2>
+              </div>
+              {result && (
+                <button className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs transition-colors">
+                  <Download size={14} />
+                  Export
+                </button>
+              )}
+            </div>
 
-          <div className="aspect-video bg-gray-900 rounded-lg border border-gray-800 flex items-center justify-center">
-            <div className="text-center">
-              <span className="text-6xl block mb-4">
-                {selectedView === "heatmap" && "🔥"}
-                {selectedView === "gradcam" && "🎯"}
-                {selectedView === "attention" && "👁️"}
-              </span>
-              <p className="text-gray-500">Upload an image or use detection to generate visualization</p>
+            <div className="aspect-video bg-gray-900 rounded-lg border border-gray-800 flex items-center justify-center overflow-hidden">
+              {loading ? (
+                <div className="text-center">
+                  <Loader2 size={32} className="text-rail-400 animate-spin mx-auto mb-2" />
+                  <p className="text-sm text-gray-500">Generating visualization...</p>
+                </div>
+              ) : imageSrc ? (
+                <img src={imageSrc} alt={selectedView} className="w-full h-full object-contain" />
+              ) : (
+                <div className="text-center">
+                  <ImageIcon size={40} className="text-gray-700 mx-auto mb-3" />
+                  <p className="text-sm text-gray-500">Upload an image to generate visualization</p>
+                </div>
+              )}
             </div>
-          </div>
+          </Card>
 
-          <div className="mt-6 grid grid-cols-2 gap-4">
-            <div className="bg-gray-900 rounded-lg p-4">
-              <span className="text-xs text-gray-500">Detection Rationale</span>
-              <p className="text-sm mt-1">
-                {selectedView === "heatmap" && "Regions with high anomaly scores (red) indicate deviations from healthy rail memory bank."}
-                {selectedView === "gradcam" && "Grad-CAM highlights pixels that most influenced the classifier's decision."}
-                {selectedView === "attention" && "DINOv2 self-attention maps show which patch relationships the model focuses on."}
-              </p>
+          {result && (
+            <div className="grid grid-cols-2 gap-4">
+              <Card>
+                <p className="text-xs text-gray-500 mb-1">Detection Result</p>
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={
+                      result.status === "defect_detected" ? "error" : result.status === "healthy" ? "success" : "warning"
+                    }
+                  >
+                    {result.status?.replace("_", " ")}
+                  </Badge>
+                  {result.confidence !== undefined && (
+                    <span className="text-sm font-mono text-gray-400">
+                      {(result.confidence * 100).toFixed(0)}% confidence
+                    </span>
+                  )}
+                </div>
+              </Card>
+              <Card>
+                <p className="text-xs text-gray-500 mb-1">Research Value</p>
+                <p className="text-sm text-gray-300">{getRationale()}</p>
+              </Card>
             </div>
-            <div className="bg-gray-900 rounded-lg p-4">
-              <span className="text-xs text-gray-500">Research Value</span>
-              <p className="text-sm mt-1">
-                Enables engineers to verify that the model focuses on the rail surface, not background or lighting changes.
-              </p>
-            </div>
-          </div>
+          )}
         </div>
       </div>
-    </div>
-  );
+    </PageContainer>
+  )
 }

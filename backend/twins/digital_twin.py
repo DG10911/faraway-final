@@ -14,8 +14,8 @@ class DefectEvent:
     severity: str
     anomaly_score: float
     confidence: float
-    timestamp: str
-    event_id: str
+    timestamp: str = ""
+    event_id: str = ""
 
     def __post_init__(self):
         if not self.event_id:

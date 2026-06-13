@@ -9,14 +9,16 @@ build/
 
 node_modules/
 .next/
+*.tsbuildinfo
+.venv/
 
-data/embeddings/
+data/
 *.npy
+*.npz
 *.pt
 *.pth
 *.onnx
 
-results/
 *.log
 
 .vscode/

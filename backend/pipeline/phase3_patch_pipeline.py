@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 from typing import List, Tuple
 
@@ -37,6 +38,3 @@ class PatchPipeline:
             count_map[y1:y2, x1:x2] += 1
         count_map = np.maximum(count_map, 1e-6)
         return heatmap / count_map
-
-
-import cv2
