@@ -52,6 +52,10 @@ def main():
     parser.add_argument("--n-shots", type=int, default=5)
     parser.add_argument("--n-ways", type=int, default=5)
     parser.add_argument("--n-episodes", type=int, default=100)
+    parser.add_argument("--open-set-budget", type=float, default=0.1,
+                        help="Target false-unknown rate for the calibrated open-set rejection rule")
+    parser.add_argument("--n-calib-shots", type=int, default=1,
+                        help="Held-out known shots per class used to calibrate the open-set threshold")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
@@ -156,8 +160,14 @@ def main():
             return
         print(f"Evaluating {args.n_ways}-way {args.n_shots}-shot over {args.n_episodes} episodes...")
         closed = evaluate_few_shot(all_embs, args.n_ways, args.n_shots, args.n_episodes)
+        # Uncalibrated baseline (mean+3*std support rule) — kept for the ablation story.
         open_set = evaluate_few_shot(all_embs, args.n_ways, args.n_shots, args.n_episodes, open_set=True)
-        result = {"closed_set": closed, "open_set": open_set}
+        # Calibrated, conformal-style rejection at a target false-unknown budget (the fix).
+        open_set_calibrated = evaluate_few_shot(
+            all_embs, args.n_ways, args.n_shots, args.n_episodes,
+            open_set=True, open_set_budget=args.open_set_budget, n_calib_shots=args.n_calib_shots,
+        )
+        result = {"closed_set": closed, "open_set_baseline": open_set, "open_set_calibrated": open_set_calibrated}
         print(json.dumps(result, indent=2))
         with open(output_dir / "few_shot_eval.json", "w") as f:
             json.dump(result, f, indent=2)

@@ -23,6 +23,29 @@ system = RailGuardFSL()
 
 IMAGE_KEYS = ["heatmap", "attention", "gradcam", "anomaly_mask"]
 
+DEFAULT_FEWSHOT_CLASSES = ["crack", "squat", "spalling", "shelling", "flaking"]
+
+
+@app.on_event("startup")
+def _auto_initialize():
+    """Boot straight into a ready state if embeddings already exist on disk
+    (e.g. data/embeddings from a prior train run or a shared dataset) — so a
+    fresh `python run_api.py` needs no manual /initialize or /few-shot/setup."""
+    try:
+        healthy = system.embedding_db.get("healthy_tokens")
+        if healthy is None:
+            healthy = system.embedding_db.get("healthy")
+        if healthy is not None:
+            system.initialize(healthy, 95.0)
+            print(f"[startup] auto-initialized PatchCore on {len(healthy)} healthy embeddings")
+        support = {c: system.embedding_db.get(c) for c in DEFAULT_FEWSHOT_CLASSES}
+        support = {k: v for k, v in support.items() if v is not None and len(v) >= 5}
+        if len(support) >= 2:
+            system.setup_few_shot(support, n_shots=5)
+            print(f"[startup] auto-setup few-shot classes: {list(support.keys())}")
+    except Exception as e:  # never block server boot on auto-init
+        print(f"[startup] auto-initialize skipped: {e}")
+
 
 def _decode_upload(contents: bytes) -> np.ndarray:
     np_arr = np.frombuffer(contents, np.uint8)
@@ -63,6 +86,15 @@ class LabelRequest(BaseModel):
 class DefectReport(BaseModel):
     track_id: str = "Track_A12"
     location_m: float = 0.0
+
+
+class ConformalRequest(BaseModel):
+    target_recall: float = 0.95
+
+
+class ThresholdRequest(BaseModel):
+    percentile: float = 95.0
+    domain: str = "default"
 
 
 @app.get("/health")
@@ -151,6 +183,51 @@ def discovery_label(req: LabelRequest):
     if not system.label_unknown(req.unknown_id, req.label):
         raise HTTPException(404, f"Unknown sample '{req.unknown_id}' not found")
     return {"status": "labeled", "label": req.label, "few_shot_classes": system.embedding_db.list_classes()}
+
+
+@app.post("/conformal/calibrate")
+def conformal_calibrate(req: ConformalRequest):
+    """Set a conformal operating point with a finite-sample recall guarantee."""
+    try:
+        return system.calibrate_conformal(req.target_recall)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/conformal/status")
+def conformal_status():
+    return {
+        "conformal": system.conformal_state,
+        "scores": {"n_defect": len(system._defect_scores), "n_healthy": len(system._healthy_scores_obs)},
+    }
+
+
+@app.post("/calibrate/threshold")
+def calibrate_threshold(req: ThresholdRequest):
+    """Cross-domain calibration: re-pick the anomaly threshold at a healthy percentile."""
+    try:
+        return system.calibrate_threshold(req.percentile, req.domain)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/calibrate/domains")
+def calibrate_domains():
+    return {"domains": list(system.domains.values())}
+
+
+@app.post("/augment/preview")
+async def augment_preview(file: UploadFile = File(...), kind: str = Form("crack")):
+    """Render a synthetic defect on the uploaded healthy crop (CutPaste/procedural)."""
+    image = _decode_upload(await file.read())
+    result = system.augment_preview(image, kind)
+    out = {"kind": result["kind"]}
+    for key in ("original", "synthetic"):
+        img = result[key]
+        if isinstance(img, np.ndarray):
+            _, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+            out[f"{key}_b64"] = base64.b64encode(buf).decode("utf-8")
+    return out
 
 
 @app.get("/stats")

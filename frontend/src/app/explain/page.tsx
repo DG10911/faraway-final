@@ -6,6 +6,7 @@ import { Eye, Image as ImageIcon, Upload, Loader2, Download, Thermometer, Target
 import { PageContainer } from "@/components/layout/PageContainer"
 import { Card } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
+import { DemoGallery } from "@/components/ui/DemoGallery"
 import { api } from "@/lib/api"
 import type { DetectionResult, ViewKey } from "@/lib/types"
 
@@ -21,13 +22,10 @@ export default function ExplainabilityPage() {
   const [preview, setPreview] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const onDrop = useCallback(async (acceptedFiles: File[]) => {
-    const file = acceptedFiles[0]
-    if (!file) return
-    setPreview(URL.createObjectURL(file))
+  const analyze = useCallback(async (file: File, previewUrl: string) => {
+    setPreview(previewUrl)
     setLoading(true)
     setResult(null)
-
     try {
       const data = await api.detect(file)
       setResult(data)
@@ -38,6 +36,12 @@ export default function ExplainabilityPage() {
     }
   }, [])
 
+  const onDrop = useCallback((acceptedFiles: File[]) => {
+    const file = acceptedFiles[0]
+    if (!file) return
+    analyze(file, URL.createObjectURL(file))
+  }, [analyze])
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { "image/*": [".png", ".jpg", ".jpeg"] },
@@ -47,7 +51,7 @@ export default function ExplainabilityPage() {
   const getImageSrc = () => {
     if (!result) return null
     if (selectedView === "heatmap" && result.heatmap_b64) return `data:image/png;base64,${result.heatmap_b64}`
-    if (selectedView === "attention" && result.gradcam_b64) return `data:image/png;base64,${result.gradcam_b64}`
+    if (selectedView === "attention" && (result.attention_b64 || result.gradcam_b64)) return `data:image/png;base64,${result.attention_b64 || result.gradcam_b64}`
     if (selectedView === "mask" && result.anomaly_mask_b64) return `data:image/png;base64,${result.anomaly_mask_b64}`
     return null
   }
@@ -61,11 +65,14 @@ export default function ExplainabilityPage() {
   const imageSrc = getImageSrc()
 
   return (
-    <PageContainer title="Explainability Viewer" subtitle="Visualizing why defects were detected">
+    <PageContainer eyebrow="Detect" title="Explainability Viewer" subtitle="Visualizing why defects were detected">
+      <div className="mb-6">
+        <DemoGallery onPick={(file, preview) => analyze(file, preview)} title="Demo images — click to visualize" />
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="space-y-4">
           <Card>
-            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Visualization</h2>
+            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Visualization</h2>
             <div className="space-y-2">
               {VIEWS.map((v) => {
                 const Icon = v.icon
@@ -74,14 +81,14 @@ export default function ExplainabilityPage() {
                     key={v.key}
                     onClick={() => setSelectedView(v.key)}
                     className={`w-full text-left p-3 rounded-lg transition-colors ${
-                      selectedView === v.key ? "bg-rail-900 border border-rail-700" : "bg-gray-900 hover:bg-gray-800"
+                      selectedView === v.key ? "bg-rail-500/15 border border-rail-500/40" : "bg-slate-800/50 hover:bg-slate-700"
                     }`}
                   >
                     <div className="flex items-center gap-2">
-                      <Icon size={16} className={selectedView === v.key ? "text-rail-400" : "text-gray-400"} />
+                      <Icon size={16} className={selectedView === v.key ? "text-rail-300" : "text-slate-400"} />
                       <p className="font-medium text-sm">{v.label}</p>
                     </div>
-                    <p className="text-xs text-gray-500 mt-1 ml-7">{v.desc}</p>
+                    <p className="text-xs text-slate-400 mt-1 ml-7">{v.desc}</p>
                   </button>
                 )
               })}
@@ -89,11 +96,11 @@ export default function ExplainabilityPage() {
           </Card>
 
           <Card>
-            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Upload Image</h2>
+            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Upload Image</h2>
             <div
               {...getRootProps()}
-              className={`aspect-square bg-gray-900 rounded-lg border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all ${
-                isDragActive ? "border-rail-400 bg-rail-900/20" : "border-gray-700 hover:border-gray-500"
+              className={`aspect-square bg-slate-800/50 rounded-lg border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all ${
+                isDragActive ? "border-rail-400 bg-rail-500/15" : "border-slate-600 hover:border-rail-400"
               }`}
             >
               <input {...getInputProps()} />
@@ -101,8 +108,8 @@ export default function ExplainabilityPage() {
                 <img src={preview} alt="Upload" className="w-full h-full object-cover rounded-lg" />
               ) : (
                 <>
-                  <Upload size={24} className="text-gray-500 mb-2" />
-                  <p className="text-xs text-gray-500">Click or drop image</p>
+                  <Upload size={24} className="text-slate-400 mb-2" />
+                  <p className="text-xs text-slate-400">Click or drop image</p>
                 </>
               )}
             </div>
@@ -113,31 +120,31 @@ export default function ExplainabilityPage() {
           <Card>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <Eye size={18} className="text-rail-400" />
+                <Eye size={18} className="text-rail-300" />
                 <h2 className="font-semibold">
                   {VIEWS.find((v) => v.key === selectedView)?.label}
                 </h2>
               </div>
               {result && (
-                <button className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs transition-colors">
+                <button className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 border border-slate-700 hover:bg-slate-800/50 rounded-lg text-xs transition-colors">
                   <Download size={14} />
                   Export
                 </button>
               )}
             </div>
 
-            <div className="aspect-video bg-gray-900 rounded-lg border border-gray-800 flex items-center justify-center overflow-hidden">
+            <div className="aspect-video bg-slate-800/50 rounded-lg border border-slate-700 flex items-center justify-center overflow-hidden">
               {loading ? (
                 <div className="text-center">
-                  <Loader2 size={32} className="text-rail-400 animate-spin mx-auto mb-2" />
-                  <p className="text-sm text-gray-500">Generating visualization...</p>
+                  <Loader2 size={32} className="text-rail-300 animate-spin mx-auto mb-2" />
+                  <p className="text-sm text-slate-400">Generating visualization...</p>
                 </div>
               ) : imageSrc ? (
                 <img src={imageSrc} alt={selectedView} className="w-full h-full object-contain" />
               ) : (
                 <div className="text-center">
-                  <ImageIcon size={40} className="text-gray-700 mx-auto mb-3" />
-                  <p className="text-sm text-gray-500">Upload an image to generate visualization</p>
+                  <ImageIcon size={40} className="text-slate-600 mx-auto mb-3" />
+                  <p className="text-sm text-slate-400">Upload an image to generate visualization</p>
                 </div>
               )}
             </div>
@@ -146,7 +153,7 @@ export default function ExplainabilityPage() {
           {result && (
             <div className="grid grid-cols-2 gap-4">
               <Card>
-                <p className="text-xs text-gray-500 mb-1">Detection Result</p>
+                <p className="text-xs text-slate-400 mb-1">Detection Result</p>
                 <div className="flex items-center gap-2">
                   <Badge
                     variant={
@@ -156,15 +163,15 @@ export default function ExplainabilityPage() {
                     {result.status?.replace("_", " ")}
                   </Badge>
                   {result.confidence !== undefined && (
-                    <span className="text-sm font-mono text-gray-400">
+                    <span className="text-sm font-mono text-slate-400">
                       {(result.confidence * 100).toFixed(0)}% confidence
                     </span>
                   )}
                 </div>
               </Card>
               <Card>
-                <p className="text-xs text-gray-500 mb-1">Research Value</p>
-                <p className="text-sm text-gray-300">{getRationale()}</p>
+                <p className="text-xs text-slate-400 mb-1">Research Value</p>
+                <p className="text-sm text-slate-200">{getRationale()}</p>
               </Card>
             </div>
           )}

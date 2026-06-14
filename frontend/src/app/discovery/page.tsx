@@ -58,7 +58,7 @@ export default function DiscoveryPage() {
       actions={
         <button
           onClick={fetchSamples}
-          className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm transition-colors"
+          className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 border border-slate-700 hover:bg-slate-800/50 rounded-lg text-sm transition-colors"
         >
           <RefreshCw size={14} />
           Refresh
@@ -67,20 +67,20 @@ export default function DiscoveryPage() {
     >
       <Card className="mb-6">
         <div className="flex items-start gap-3">
-          <FileQuestion size={20} className="text-yellow-400 mt-0.5 shrink-0" />
+          <FileQuestion size={20} className="text-amber-400 mt-0.5 shrink-0" />
           <div>
-            <p className="text-sm font-medium text-yellow-400">Research Insight</p>
-            <p className="text-sm text-gray-400 mt-1">
-              When <code className="text-rail-400">distance &gt; threshold</code> AND{" "}
-              <code className="text-rail-400">anomaly_score &gt; threshold</code>, the system returns{" "}
-              <code className="text-rail-400">unknown_anomaly</code> instead of forcing assignment to known classes.
+            <p className="text-sm font-medium text-amber-400">Research Insight</p>
+            <p className="text-sm text-slate-400 mt-1">
+              When <code className="text-rail-300">distance &gt; threshold</code> AND{" "}
+              <code className="text-rail-300">anomaly_score &gt; threshold</code>, the system returns{" "}
+              <code className="text-rail-300">unknown_anomaly</code> instead of forcing assignment to known classes.
             </p>
           </div>
         </div>
       </Card>
 
       {status && (
-        <div className="flex items-center gap-3 p-4 mb-6 rounded-lg bg-yellow-900/20 border border-yellow-800/40 text-yellow-400 text-sm">
+        <div className="flex items-center gap-3 p-4 mb-6 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-400 text-sm">
           <AlertTriangle size={16} className="shrink-0" />
           <span>{status}</span>
         </div>
@@ -95,26 +95,26 @@ export default function DiscoveryPage() {
       ) : samples.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {samples.map((s) => (
-            <Card key={s.id} className="border border-yellow-900/50">
+            <Card key={s.id} className="border border-amber-500/30">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <AlertTriangle size={16} className="text-yellow-400" />
-                  <span className="font-mono text-yellow-400 text-sm">{s.id}</span>
+                  <AlertTriangle size={16} className="text-amber-400" />
+                  <span className="font-mono text-amber-400 text-sm">{s.id}</span>
                 </div>
                 <Badge variant="warning">Unknown</Badge>
               </div>
 
               <div className="grid grid-cols-3 gap-3 text-sm mb-4">
                 <div>
-                  <span className="text-gray-500 text-xs">Confidence</span>
+                  <span className="text-slate-400 text-xs">Confidence</span>
                   <p className="font-mono">{(s.anomaly_score * 100).toFixed(0)}%</p>
                 </div>
                 <div>
-                  <span className="text-gray-500 text-xs">Track</span>
+                  <span className="text-slate-400 text-xs">Track</span>
                   <p className="font-mono">{s.track_id}</p>
                 </div>
                 <div>
-                  <span className="text-gray-500 text-xs">Distance</span>
+                  <span className="text-slate-400 text-xs">Distance</span>
                   <p className="font-mono">{s.distance?.toFixed(3) ?? "—"}</p>
                 </div>
               </div>
@@ -125,7 +125,7 @@ export default function DiscoveryPage() {
                     key={label}
                     onClick={() => handleLabel(s.id, label)}
                     disabled={labeling === s.id}
-                    className="flex items-center gap-1 px-2.5 py-1 text-xs bg-rail-900/60 text-rail-300 rounded-lg hover:bg-rail-800/60 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs bg-rail-500/15 text-rail-300 rounded-lg hover:bg-rail-500/20 transition-colors disabled:opacity-50"
                   >
                     {labeling === s.id ? <Loader2 size={12} className="animate-spin" /> : <Tag size={12} />}
                     {label}
@@ -137,7 +137,7 @@ export default function DiscoveryPage() {
         </div>
       ) : (
         <Card>
-          <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+          <div className="flex flex-col items-center justify-center py-12 text-slate-400">
             <Search size={32} className="mb-3" />
             <p>No unknown anomalies flagged yet</p>
             <p className="text-xs mt-1">New defect categories will appear here automatically</p>

@@ -6,17 +6,15 @@ interface CardProps {
   children: ReactNode
   className?: string
   glow?: "anomaly" | "healthy" | "none"
+  hover?: boolean
   onClick?: () => void
 }
 
-export function Card({ children, className = "", glow = "none", onClick }: CardProps) {
+export function Card({ children, className = "", glow = "none", hover, onClick }: CardProps) {
   const glowClass = glow === "anomaly" ? "anomaly-glow" : glow === "healthy" ? "healthy-glow" : ""
-  const clickClass = onClick ? "cursor-pointer hover:border-rail-500/50 transition-all" : ""
+  const hoverClass = hover || onClick ? "card-hover cursor-pointer" : ""
   return (
-    <div
-      onClick={onClick}
-      className={`glass rounded-xl p-6 ${glowClass} ${clickClass} ${className}`}
-    >
+    <div onClick={onClick} className={`card-surface p-6 ${glowClass} ${hoverClass} ${className}`}>
       {children}
     </div>
   )

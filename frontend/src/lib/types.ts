@@ -15,6 +15,7 @@ export interface DetectionResult {
   event_id?: string
   priority_rank?: string
   heatmap_b64?: string
+  attention_b64?: string
   gradcam_b64?: string
   anomaly_mask_b64?: string
   patch_coords?: number[][]
@@ -94,11 +95,41 @@ export interface DefectDistribution {
   distribution: Record<string, number>
 }
 
+export interface ConformalResult {
+  threshold: number
+  target_recall: number
+  guaranteed_recall: number
+  n_calibration: number
+  guarantee_achievable: boolean
+  note: string
+  empirical_recall?: number | null
+  false_positive_rate?: number | null
+  n_defect?: number
+  n_healthy?: number
+  applied?: boolean
+  error?: string
+}
+
+export interface DomainCalibration {
+  domain: string
+  percentile: number
+  threshold: number
+  false_positive_rate?: number | null
+  empirical_recall?: number | null
+  n_defect?: number
+}
+
+export interface AugmentResult {
+  kind: string
+  original_b64?: string
+  synthetic_b64?: string
+}
+
 export type ViewKey = "heatmap" | "attention" | "mask"
 
 export const SEVERITY_COLORS: Record<string, string> = {
-  Low: "text-green-400 bg-green-900/40 border-green-700/40",
-  Medium: "text-yellow-400 bg-yellow-900/40 border-yellow-700/40",
-  High: "text-orange-400 bg-orange-900/40 border-orange-700/40",
-  Critical: "text-red-400 bg-red-900/40 border-red-700/40",
+  Low: "text-emerald-300 bg-emerald-500/15 border-emerald-500/30",
+  Medium: "text-amber-400 bg-amber-500/15 border-amber-500/30",
+  High: "text-orange-400 bg-orange-500/15 border-orange-500/30",
+  Critical: "text-red-400 bg-red-500/15 border-red-500/30",
 }

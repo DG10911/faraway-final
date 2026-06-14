@@ -1,4 +1,4 @@
-import type { HealthStatus, DetectionResult, FewShotResult, Stats, Segment, UnknownSample, DefectDistribution } from "./types"
+import type { HealthStatus, DetectionResult, FewShotResult, Stats, Segment, UnknownSample, DefectDistribution, ConformalResult, DomainCalibration, AugmentResult } from "./types"
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
@@ -30,11 +30,14 @@ export const api = {
     return fetch(`${API}/few-shot/setup`, { method: "POST", body: params }).then((r) => r.json())
   },
 
-  detect: (file: File, track_id = "Upload_Track", location_m = 0) => {
+  detect: (file: File, track_id?: string, location_m?: number) => {
+    const TRACKS = ["Track_A12", "Track_B7", "Track_C3", "Track_D9", "Track_E5"]
+    const tid = track_id ?? TRACKS[Math.floor(Math.random() * TRACKS.length)]
+    const loc = location_m ?? Math.floor(Math.random() * 900)
     const form = new FormData()
     form.append("file", file)
-    form.append("track_id", track_id)
-    form.append("location_m", String(location_m))
+    form.append("track_id", tid)
+    form.append("location_m", String(loc))
     return fetch(`${API}/detect`, { method: "POST", body: form }).then((r) => r.json()) as Promise<DetectionResult>
   },
 
@@ -50,6 +53,8 @@ export const api = {
 
   twinStatus: (track_id: string) => request<Segment>(`/digital-twin/status/${track_id}`),
 
+  twinOverview: () => request<{ segments: Segment[] }>("/digital-twin/status"),
+
   twinReport: (track_id: string) =>
     request<Segment>("/digital-twin/report", {
       method: "POST",
@@ -63,4 +68,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ id, label }),
     }),
+
+  conformalCalibrate: (target_recall: number) =>
+    request<ConformalResult>("/conformal/calibrate", {
+      method: "POST",
+      body: JSON.stringify({ target_recall }),
+    }),
+
+  conformalStatus: () =>
+    request<{ conformal: ConformalResult | null; scores: { n_defect: number; n_healthy: number } }>("/conformal/status"),
+
+  calibrateThreshold: (percentile: number, domain = "default") =>
+    request<DomainCalibration>("/calibrate/threshold", {
+      method: "POST",
+      body: JSON.stringify({ percentile, domain }),
+    }),
+
+  calibrateDomains: () => request<{ domains: DomainCalibration[] }>("/calibrate/domains"),
+
+  augmentPreview: (file: File, kind: string) => {
+    const form = new FormData()
+    form.append("file", file)
+    form.append("kind", kind)
+    return fetch(`${API}/augment/preview`, { method: "POST", body: form }).then((r) => r.json()) as Promise<AugmentResult>
+  },
 }

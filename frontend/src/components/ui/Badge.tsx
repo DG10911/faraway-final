@@ -11,11 +11,11 @@ interface BadgeProps {
 
 const BADGE_COLORS: Record<string, string> = {
   ...SEVERITY_COLORS,
-  default: "text-gray-400 bg-gray-800 border-gray-700",
-  success: "text-green-400 bg-green-900/40 border-green-700/40",
-  warning: "text-yellow-400 bg-yellow-900/40 border-yellow-700/40",
-  error: "text-red-400 bg-red-900/40 border-red-700/40",
-  info: "text-sky-400 bg-sky-900/40 border-sky-700/40",
+  default: "text-slate-300 bg-slate-800 border-slate-700",
+  success: "text-emerald-300 bg-emerald-500/15 border-emerald-500/30",
+  warning: "text-amber-400 bg-amber-500/15 border-amber-500/30",
+  error: "text-red-400 bg-red-500/15 border-red-500/30",
+  info: "text-rail-300 bg-rail-500/15 border-rail-500/30",
 }
 
 export function Badge({ variant, children, className = "" }: BadgeProps) {

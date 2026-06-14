@@ -7,16 +7,24 @@ interface StatusDotProps {
 }
 
 const DOT_COLORS = {
-  online: "bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.5)]",
-  warning: "bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.5)]",
-  offline: "bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.5)]",
+  online: "bg-emerald-400",
+  warning: "bg-gold-400",
+  offline: "bg-danger-400",
+}
+const PILL_COLORS = {
+  online: "text-emerald-300 border-emerald-500/30 bg-emerald-500/15",
+  warning: "text-gold-500 border-gold-400/40 bg-gold-400/10",
+  offline: "text-danger-400 border-danger-500/30 bg-danger-500/15",
 }
 
 export function StatusDot({ status, label, className = "" }: StatusDotProps) {
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
-      <span className={`w-2 h-2 rounded-full ${DOT_COLORS[status]} animate-pulse`} />
-      {label && <span className="text-sm text-gray-400">{label}</span>}
+    <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 ${PILL_COLORS[status]} ${className}`}>
+      <span className="relative flex h-2 w-2">
+        <span className={`absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping ${DOT_COLORS[status]}`} />
+        <span className={`relative inline-flex h-2 w-2 rounded-full ${DOT_COLORS[status]}`} />
+      </span>
+      {label && <span className="text-xs font-medium">{label}</span>}
     </div>
   )
 }

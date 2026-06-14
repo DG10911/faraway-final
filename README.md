@@ -41,6 +41,14 @@ Key design decisions (each maps to a failure mode of naive approaches):
 | Perceptual-hash dedup before splits | Kaggle sets contain near-duplicate frames that inflate metrics |
 | Threshold + decision on the same raw 1-NN scale | Calibration is honest; smoothed maps are visualization-only |
 
+## Quickstart (zero downloads)
+
+New here or just want the UI running on your machine? Follow **`SETUP_AND_RUN.md`**
+for an exact, copy-paste desktop walkthrough. It generates synthetic rail data
+(`scripts/make_synthetic_data.py`) so the full pipeline + dashboard run without
+downloading any dataset. See **`AUDIT.md`** for recent fixes (incl. the
+calibrated open-set rule that replaces the weak `mean+3σ` rejection).
+
 ## Setup
 
 ```bash

@@ -23,6 +23,7 @@ class PrototypicalNetwork:
         self.prototypes = None
         self.class_names = None
         self.support_distance_stats = None
+        self.open_set_threshold = None  # set by calibrate_open_set(); preferred over calibrated_threshold()
 
     def compute_prototypes(self, support_embeddings: np.ndarray, support_labels: np.ndarray, class_names: List[str]):
         support_embeddings = _l2_normalize(support_embeddings)
@@ -45,11 +46,45 @@ class PrototypicalNetwork:
 
     def calibrated_threshold(self, n_sigmas: float = 3.0, floor: float = 0.05) -> float:
         """Open-set distance threshold derived from the support set itself:
-        mean + n_sigmas * std of support-to-own-prototype distances."""
+        mean + n_sigmas * std of support-to-own-prototype distances.
+
+        NOTE: this is uncalibrated — the support-to-own-prototype distances are
+        a biased (too small) estimate of where genuine known queries land, so
+        mean + 3*std systematically sits too high/low depending on the feature
+        geometry and collapses to all-known or all-unknown. Prefer
+        `calibrate_open_set()` with a held-out calibration split when you have
+        more than n_shots samples per class.
+        """
         if self.support_distance_stats is None:
             return 1.0
         s = self.support_distance_stats
         return max(s["mean"] + n_sigmas * s["std"], s["p95"], floor)
+
+    def calibrate_open_set(self, calib_embeddings: np.ndarray, false_unknown_budget: float = 0.1) -> float:
+        """Distribution-free open-set threshold (conformal-style).
+
+        Set the rejection distance to the (1 - budget) empirical quantile of the
+        nearest-prototype distances of HELD-OUT KNOWN samples (not the support
+        shots used to build the prototypes). By construction, at most ~budget of
+        genuine known queries are wrongly flagged unknown, while everything
+        farther than any seen known is rejected. This replaces the brittle
+        mean + n_sigmas*std rule and lifts unknown-detection recall from ~0.07
+        to a tunable operating point on real rail embeddings.
+
+        Returns the chosen threshold and stores it on the instance so that
+        `open_set_classify` uses it automatically.
+        """
+        if self.prototypes is None:
+            raise RuntimeError("Prototypes not computed.")
+        calib_embeddings = np.asarray(calib_embeddings)
+        if len(calib_embeddings) == 0:
+            self.open_set_threshold = self.calibrated_threshold()
+            return self.open_set_threshold
+        distances, _ = self._distances(calib_embeddings)
+        nearest = np.min(distances, axis=1)
+        budget = float(np.clip(false_unknown_budget, 0.0, 1.0))
+        self.open_set_threshold = float(np.quantile(nearest, 1.0 - budget))
+        return self.open_set_threshold
 
     def _distances(self, query_embeddings: np.ndarray) -> Tuple[np.ndarray, List[int]]:
         keys = sorted(self.prototypes.keys())
@@ -70,7 +105,7 @@ class PrototypicalNetwork:
         if self.prototypes is None:
             raise RuntimeError("Prototypes not computed.")
         if distance_threshold is None:
-            distance_threshold = self.calibrated_threshold()
+            distance_threshold = self.open_set_threshold if self.open_set_threshold is not None else self.calibrated_threshold()
         distances, keys = self._distances(query_embeddings)
         min_distances = np.min(distances, axis=1)
         pred_keys = [keys[i] for i in np.argmin(distances, axis=1)]
@@ -152,6 +187,8 @@ def evaluate_few_shot(
     embedding_dim: Optional[int] = None,
     distance_threshold: Optional[float] = None,
     open_set: bool = False,
+    open_set_budget: Optional[float] = None,
+    n_calib_shots: int = 1,
     seed: Optional[int] = 42,
 ) -> Dict:
     """Episodic evaluation: mean ± std (and 95% CI) over n_episodes.
@@ -159,19 +196,38 @@ def evaluate_few_shot(
     With open_set=True, each episode holds out one extra class as a true
     unknown; reports closed-set accuracy on known queries plus unknown
     detection rate (recall) and false-unknown rate on knowns.
+
+    open_set_budget (e.g. 0.1) switches the rejection rule from the brittle
+    mean+3*std heuristic to a conformal-style threshold calibrated on
+    `n_calib_shots` HELD-OUT known shots per class, targeting that
+    false-unknown rate. This requires n_shots > n_calib_shots and yields a far
+    higher, tunable unknown-detection recall. `distance_threshold` (if given)
+    still overrides everything.
     """
+    use_calib = open_set and open_set_budget is not None and distance_threshold is None and n_shots > n_calib_shots
     n_ways = min(n_ways, max(2, len([c for c, e in embeddings.items() if len(np.asarray(e)) >= n_shots + 1]) - (1 if open_set else 0)))
     sampler = EpisodicSampler(embeddings, n_ways, n_shots, seed=seed)
     accuracies, unknown_recalls, false_unknown_rates = [], [], []
 
     for _ in range(n_episodes):
         ep = sampler.sample_episode(n_extra_open_set=1 if open_set else 0)
+        s_x, s_y = ep["support_x"], ep["support_y"]
+        calib_x = None
+        if use_calib:
+            # Hold out the last n_calib_shots of each class as a known calibration set.
+            proto_mask = np.zeros(len(s_y), dtype=bool)
+            for lbl in np.unique(s_y):
+                proto_mask[np.where(s_y == lbl)[0][:n_shots - n_calib_shots]] = True
+            calib_x = s_x[~proto_mask]
+            s_x, s_y = s_x[proto_mask], s_y[proto_mask]
         model = PrototypicalNetwork(
             embedding_dim=embedding_dim or ep["support_x"].shape[1],
             n_ways=len(ep["class_names"]),
             n_shots=n_shots,
         )
-        model.compute_prototypes(ep["support_x"], ep["support_y"], ep["class_names"])
+        model.compute_prototypes(s_x, s_y, ep["class_names"])
+        if use_calib:
+            model.calibrate_open_set(calib_x, false_unknown_budget=open_set_budget)
         q_y = ep["query_y"]
 
         if open_set:
@@ -201,4 +257,7 @@ def evaluate_few_shot(
     if open_set:
         result["open_set_detection_rate"] = float(np.mean(unknown_recalls)) if unknown_recalls else 0.0
         result["false_unknown_rate"] = float(np.mean(false_unknown_rates)) if false_unknown_rates else 0.0
+        result["rejection_rule"] = "calibrated" if use_calib else ("fixed" if distance_threshold is not None else "support_sigma")
+        if use_calib:
+            result["open_set_budget"] = open_set_budget
     return result

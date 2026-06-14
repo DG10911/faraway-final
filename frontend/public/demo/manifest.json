@@ -1,0 +1,74 @@
+[
+  {
+    "src": "/demo/healthy_1.jpg",
+    "label": "healthy"
+  },
+  {
+    "src": "/demo/healthy_2.jpg",
+    "label": "healthy"
+  },
+  {
+    "src": "/demo/healthy_3.jpg",
+    "label": "healthy"
+  },
+  {
+    "src": "/demo/crack_1.jpg",
+    "label": "crack"
+  },
+  {
+    "src": "/demo/crack_2.jpg",
+    "label": "crack"
+  },
+  {
+    "src": "/demo/crack_3.jpg",
+    "label": "crack"
+  },
+  {
+    "src": "/demo/squat_1.jpg",
+    "label": "squat"
+  },
+  {
+    "src": "/demo/squat_2.jpg",
+    "label": "squat"
+  },
+  {
+    "src": "/demo/spalling_1.jpg",
+    "label": "spalling"
+  },
+  {
+    "src": "/demo/spalling_2.jpg",
+    "label": "spalling"
+  },
+  {
+    "src": "/demo/shelling_1.jpg",
+    "label": "shelling"
+  },
+  {
+    "src": "/demo/shelling_2.jpg",
+    "label": "shelling"
+  },
+  {
+    "src": "/demo/groove_1.jpg",
+    "label": "groove"
+  },
+  {
+    "src": "/demo/groove_2.jpg",
+    "label": "groove"
+  },
+  {
+    "src": "/demo/joint_1.jpg",
+    "label": "joint"
+  },
+  {
+    "src": "/demo/joint_2.jpg",
+    "label": "joint"
+  },
+  {
+    "src": "/demo/flaking_1.jpg",
+    "label": "flaking"
+  },
+  {
+    "src": "/demo/flaking_2.jpg",
+    "label": "flaking"
+  }
+]

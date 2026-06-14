@@ -58,6 +58,12 @@ class RailGuardFSL:
         self._latencies = deque(maxlen=50)
         self.alerts = deque(maxlen=20)
 
+        # operating-point calibration state
+        self._defect_scores = deque(maxlen=500)    # anomaly scores of frames flagged anomalous
+        self._healthy_scores_obs = deque(maxlen=2000)  # anomaly scores of frames passed as healthy
+        self.conformal_state: Optional[Dict] = None
+        self.domains: Dict[str, Dict] = {}
+
     # ------------------------------------------------------------------ setup
 
     def initialize(self, healthy_features: np.ndarray, threshold_percentile: float = 95.0):
@@ -109,6 +115,10 @@ class RailGuardFSL:
             return {"status": "not_initialized", "patches_extracted": len(patches)}
 
         anomaly_result = self.anomaly_detector.predict(token_features, patch_coords, rail_region.shape[:2])
+        # record the raw anomaly score for operating-point / conformal calibration
+        (self._defect_scores if anomaly_result["is_anomaly"] else self._healthy_scores_obs).append(
+            float(anomaly_result["anomaly_score"])
+        )
         heatmap = self.explainability.generate_anomaly_heatmap(rail_region, anomaly_result["anomaly_map"])
         attention = self.explainability.generate_attention_map(self.encoder, rail_region)
         self._latencies.append((time.time() - start) * 1000)
@@ -264,6 +274,59 @@ class RailGuardFSL:
             if s["labeled_as"] is None
         ]
 
+    # ------------------------------------------------------- calibration / safety
+
+    def calibrate_conformal(self, target_recall: float = 0.95) -> Dict:
+        """Set a conformal operating point with a finite-sample recall guarantee
+        from the anomaly scores observed so far (defects = anomalous frames)."""
+        from ..utils.conformal import conformal_recall_threshold, evaluate_operating_point
+        defect = np.array(self._defect_scores, dtype=np.float64)
+        healthy = np.array(self._healthy_scores_obs, dtype=np.float64)
+        if len(defect) == 0:
+            raise ValueError("No defect scores observed yet — run a few detections (incl. defects) first.")
+        res = conformal_recall_threshold(defect, target_recall)
+        op = evaluate_operating_point(healthy, defect, res["threshold"])
+        if self.anomaly_detector is not None and self.anomaly_detector.anomaly_threshold is not None:
+            self.anomaly_detector.anomaly_threshold = res["threshold"]
+            res["applied"] = True
+        self.conformal_state = {
+            **res,
+            "empirical_recall": op["empirical_recall"],
+            "false_positive_rate": op["false_positive_rate"],
+            "n_defect": op["n_defect"],
+            "n_healthy": op["n_healthy"],
+        }
+        return self.conformal_state
+
+    def calibrate_threshold(self, percentile: float, domain: Optional[str] = None) -> Dict:
+        """Cross-domain calibration: re-pick the anomaly threshold at a healthy
+        percentile (per capture domain) without rebuilding the memory bank."""
+        from ..utils.conformal import evaluate_operating_point
+        if self.anomaly_detector is None or self.anomaly_detector.healthy_scores is None:
+            raise ValueError("Detector not initialized — run /initialize first.")
+        threshold = self.anomaly_detector.recalibrate(percentile)
+        healthy = np.asarray(self.anomaly_detector.healthy_scores)
+        defect = np.array(self._defect_scores, dtype=np.float64)
+        op = evaluate_operating_point(healthy, defect, threshold)
+        record = {
+            "domain": domain or "default",
+            "percentile": percentile,
+            "threshold": float(threshold),
+            "false_positive_rate": op["false_positive_rate"],
+            "empirical_recall": op["empirical_recall"],
+            "n_defect": op["n_defect"],
+        }
+        self.domains[record["domain"]] = record
+        return record
+
+    def augment_preview(self, image: np.ndarray, kind: str = "crack") -> Dict:
+        """Render a synthetic defect on a healthy crop for the augmentation demo."""
+        from ..datasets.synthetic_augment import synthesize_defect
+        rail = self.extractor.extract_rail_region(image)
+        base = rail if rail is not None else image
+        synth = synthesize_defect(base, kind)
+        return {"kind": kind, "original": base, "synthetic": synth}
+
     # ----------------------------------------------------------------- stats
 
     def _add_alert(self, message: str):
@@ -278,6 +341,8 @@ class RailGuardFSL:
             "initialized": self.initialized,
             "few_shot_ready": self.few_shot_classifier is not None,
             "alerts": list(self.alerts),
+            "calibration_scores": {"n_defect": len(self._defect_scores), "n_healthy": len(self._healthy_scores_obs)},
+            "conformal": self.conformal_state,
         }
 
     def get_defect_distribution(self) -> Dict[str, int]:

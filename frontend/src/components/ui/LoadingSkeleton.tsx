@@ -6,7 +6,7 @@ interface SkeletonProps {
 }
 
 function SkeletonBlock({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded-lg bg-gray-800/60 ${className}`} />
+  return <div className={`animate-pulse rounded-lg bg-slate-700 ${className}`} />
 }
 
 export function LoadingSkeleton({ variant = "card", className = "" }: SkeletonProps) {
@@ -39,7 +39,7 @@ export function LoadingSkeleton({ variant = "card", className = "" }: SkeletonPr
   }
 
   return (
-    <div className={`glass rounded-xl p-6 space-y-4 ${className}`}>
+    <div className={`card-surface p-6 space-y-4 ${className}`}>
       <div className="flex items-center gap-3">
         <SkeletonBlock className="h-10 w-10 rounded-full" />
         <div className="space-y-2 flex-1">
