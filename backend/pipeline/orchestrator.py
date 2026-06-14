@@ -263,8 +263,17 @@ class RailGuardFSL:
         combined = np.concatenate([existing, emb], axis=0) if existing is not None else emb
         self.embedding_db.store(label, combined)
         sample["labeled_as"] = label
-        support = {k: v for k, v in self.embedding_db.get_all().items() if k != "healthy_tokens"}
+        # Rebuild prototypes over the defect classes only (never the healthy
+        # banks), and keep the calibrated open-set threshold that setup_few_shot
+        # would otherwise reset to None.
+        prev_threshold = self.few_shot_classifier.open_set_threshold if self.few_shot_classifier else None
+        support = {
+            k: v for k, v in self.embedding_db.get_all().items()
+            if k not in ("healthy_tokens", "healthy") and not k.startswith("_")
+        }
         self.setup_few_shot(support, n_shots=None)
+        if prev_threshold is not None and self.few_shot_classifier is not None:
+            self.few_shot_classifier.open_set_threshold = prev_threshold
         return True
 
     def get_unknowns(self) -> List[Dict]:

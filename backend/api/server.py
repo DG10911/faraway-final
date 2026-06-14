@@ -1,4 +1,5 @@
 import base64
+import json
 from typing import List
 
 import cv2
@@ -32,17 +33,44 @@ def _auto_initialize():
     (e.g. data/embeddings from a prior train run or a shared dataset) — so a
     fresh `python run_api.py` needs no manual /initialize or /few-shot/setup."""
     try:
+        # A demo seed (scripts/seed_demo_embeddings.py) may persist calibrated
+        # thresholds; prefer them over the percentile defaults, which flag
+        # everything when only a handful of healthy frames are available.
+        calib = {}
+        calib_file = system.embedding_db.storage_path / "calibration.json"
+        if calib_file.exists():
+            try:
+                calib = json.loads(calib_file.read_text())
+            except Exception as e:
+                print(f"[startup] could not read calibration.json: {e}")
+
         healthy = system.embedding_db.get("healthy_tokens")
         if healthy is None:
             healthy = system.embedding_db.get("healthy")
         if healthy is not None:
             system.initialize(healthy, 95.0)
+            if calib.get("anomaly_threshold") is not None:
+                system.anomaly_detector.anomaly_threshold = float(calib["anomaly_threshold"])
+                print(f"[startup] applied calibrated anomaly threshold {calib['anomaly_threshold']:.4f}")
             print(f"[startup] auto-initialized PatchCore on {len(healthy)} healthy embeddings")
         support = {c: system.embedding_db.get(c) for c in DEFAULT_FEWSHOT_CLASSES}
-        support = {k: v for k, v in support.items() if v is not None and len(v) >= 5}
+        # Keep any class with at least a couple of support shots. The synthetic
+        # bank has ~60/class, but a demo-seeded bank (see
+        # scripts/seed_demo_embeddings.py) may only have 2-4 real frames/class.
+        support = {k: v for k, v in support.items() if v is not None and len(v) >= 2}
         if len(support) >= 2:
-            system.setup_few_shot(support, n_shots=5)
-            print(f"[startup] auto-setup few-shot classes: {list(support.keys())}")
+            # Use a true 5-shot prototype when every class has the shots for it,
+            # otherwise fall back to "use every available shot" so a small
+            # demo-seeded bank still boots its prototypes.
+            n_shots = 5 if all(len(v) >= 5 for v in support.values()) else None
+            system.setup_few_shot(support, n_shots=n_shots)
+            # Apply the calibrated open-set rejection threshold so held-out
+            # classes surface as unknown_anomaly on the Discovery page (setup_few_shot
+            # resets it to None, so this must run after).
+            if calib.get("open_set_threshold") is not None and system.few_shot_classifier is not None:
+                system.few_shot_classifier.open_set_threshold = float(calib["open_set_threshold"])
+                print(f"[startup] applied open-set threshold {calib['open_set_threshold']:.4f}")
+            print(f"[startup] auto-setup few-shot classes: {list(support.keys())} (n_shots={n_shots})")
     except Exception as e:  # never block server boot on auto-init
         print(f"[startup] auto-initialize skipped: {e}")
 
@@ -164,7 +192,7 @@ async def setup_few_shot(classes: List[str] = Form(...), n_shots: int = Form(5))
 
 @app.post("/evaluate/few-shot")
 def evaluate_few_shot(req: EvaluateRequest):
-    all_embs = {k: v for k, v in system.embedding_db.get_all().items() if k != "healthy_tokens"}
+    all_embs = {k: v for k, v in system.embedding_db.get_all().items() if k not in ("healthy_tokens", "healthy")}
     if not all_embs:
         raise HTTPException(400, "No embeddings in database — run `python train.py --mode embed` first")
     try:

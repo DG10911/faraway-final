@@ -78,3 +78,19 @@
 @layer utilities {
   .relativez { position: relative; z-index: 1; }
 }
+
+/* Live camera feed: a sweeping scan line + a soft sensor-grain flicker so the
+   simulated track-camera reads as a live feed. */
+@keyframes scanline {
+  0% { transform: translateY(-100%); opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { transform: translateY(2200%); opacity: 0; }
+}
+.animate-scanline { animation: scanline 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+.animate-live-pulse { animation: live-pulse 1.1s ease-in-out infinite; }

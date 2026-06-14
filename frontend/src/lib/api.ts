@@ -61,12 +61,13 @@ export const api = {
       body: JSON.stringify({ track_id, location_m: 0 }),
     }),
 
-  unknownSamples: () => request<UnknownSample[]>("/discovery/unknowns"),
+  unknownSamples: () =>
+    request<{ unknowns: UnknownSample[] }>("/discovery/unknowns").then((d) => d.unknowns),
 
   labelUnknown: (id: string, label: string) =>
     request<{ status: string; message: string }>("/discovery/label", {
       method: "POST",
-      body: JSON.stringify({ id, label }),
+      body: JSON.stringify({ unknown_id: id, label }),
     }),
 
   conformalCalibrate: (target_recall: number) =>
